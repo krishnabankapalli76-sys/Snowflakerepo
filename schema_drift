@@ -1,0 +1,442 @@
+Show STAGES;
+
+list @MY_CSV_STAGE;
+
+DESC STAGE MY_CSV_STAGE;
+
+
+
+
+copy into employees  
+FROM @my_csv_stage/day2_data.csv
+file_format =my_csv_format
+match_by_column_name=case_insensitive
+TRUNCATECOLUMNS=TRUE;
+
+Show file formats;
+
+desc file format my_csv_format;
+
+select * FROM EMPLOYEES;
+select * FROM stm_employess;
+create or replace stream stm_employess on table EMPLOYEES;
+CREATE OR REPLACE TABLE EMPLOYEES(id number,first_name STRING,last_name string) ;    
+alter table employees set enable_schema_evolution=TRUE;
+Show tables;
+
+Select  * FROM @my_csv_stage/day2_data.csv ;
+
+
+CREATE OR REPLACE TABLE csv_bronze_landing (
+    file_name VARCHAR,
+    row_index NUMBER,
+    file_headers ARRAY,  -- Stores the header names extracted from the file
+    row_da ta ARRAY       -- Stores the raw values of the row
+);
+Show file formats     ;
+
+  SELECT 
+    METADATA$FILENAME,
+    METADATA$FILE_ROW_NUMBER,
+    ARRAY_CONSTRUCT($1, $2, $3, $4, $5, $6) -- Adjust max size to your widest expected CSV
+  FROM @my_csv_stage/day1_data.csv
+  (FILE_FORMAT => 'MY_CSV_FORMAT')
+  ;
+
+
+EXECUTE IMMEDIATE $$
+DECLARE
+    v_column_name       STRING;
+    v_stage_data_type   STRING;
+    v_order_id          NUMBER;
+    v_column_information STRING;
+
+    lv_column       STRING DEFAULT NULL;
+    lv_column_stg   STRING DEFAULT NULL;
+    lv_sql          STRING;
+    C1 cursor for   SELECT
+            METADATASTAGE.COLUMN_NAME AS NAME,
+            METADATASTAGE.TYPE AS STAGE_DATA_TYPE,
+            METADATASTAGE.ORDER_ID+1 AS ORDER_ID,
+            TABLECOLS.COLUMN_NAME AS TARGET_COLUMN,
+            TABLECOLS.DATA_TYPE AS TARGET_DATA_TYPE FROM 
+(
+            SELECT
+                COLUMN_NAME,
+                TYPE,
+                NULLABLE,
+                ORDER_ID
+            FROM TABLE
+            (
+                INFER_SCHEMA
+                (
+                    LOCATION    => '@my_csv_stage/day2_data.csv',
+                    FILE_FORMAT => 'MY_CSV_FORMAT'
+                )
+            )
+        ) METADATASTAGE  
+        LEFT JOIN (
+            SELECT
+                COLUMN_NAME,
+                DATA_TYPE,
+                IS_NULLABLE
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = 'EMPLOYEES'
+        ) TABLECOLS 
+        ON UPPER(TABLECOLS.COLUMN_NAME) = UPPER(METADATASTAGE.COLUMN_NAME) 
+        ORDER BY METADATASTAGE.ORDER_ID ASC;
+
+BEGIN
+
+    ------------------------------------------------------------
+    -- 1. CHECK SOURCE METADATA
+    ------------------------------------------------------------
+
+    FOR I IN
+          C1
+    DO
+
+    ---  v_column_name        := i.COLUMN_NAME;
+    ---    v_stage_data_type    := i.STAGE_DATA_TYPE;
+    ---    v_order_id           := i.ORDER_ID;
+        -- v_column_information :=  i.COLUMN_INFORMATION;
+
+
+        --------------------------------------------------------
+        -- 2. ADD MISSING COLUMN
+        --------------------------------------------------------
+
+        IF (I.TARGET_COLUMN IS NULL AND I.TARGET_DATA_TYPE IS NULL ) THEN
+
+            lv_sql :=
+                'ALTER TABLE EMPLOYEES ADD COLUMN "' ||
+                upper(i.NAME) ||
+                '" ' ||
+                UPPER(i.STAGE_DATA_TYPE);
+
+            EXECUTE IMMEDIATE lv_sql;
+
+        END IF;
+
+
+        --------------------------------------------------------
+        -- 3. BUILD TARGET COLUMN LIST
+        --------------------------------------------------------
+-- IF (I.ORDER_ID !=0 ) THEN
+        lv_column :=
+            COALESCE(lv_column || ', ', '') ||
+            '"' || UPPER(i.NAME) || '"';
+
+
+        --------------------------------------------------------
+        -- 4. BUILD STAGE COLUMN LIST
+        --------------------------------------------------------
+     
+        lv_column_stg :=
+            COALESCE(lv_column_stg || ', ', '') ||
+            '$' || i.ORDER_ID;
+-- END IF;
+    END FOR;
+
+
+    ------------------------------------------------------------
+    -- 5. BUILD COPY COMMAND
+    ------------------------------------------------------------
+
+    lv_sql :=
+    'COPY INTO EMPLOYEES (' ||
+    lv_column ||
+    ') ' ||
+    'FROM (SELECT ' ||
+    lv_column_stg ||
+    ' FROM @my_csv_stage/day1_data.csv) ' || 
+    'FILE_FORMAT = (FORMAT_NAME = ''MY_CSV_FORMAT'' PARSE_HEADER = FALSE SKIP_HEADER = 1);';  --- To avoid the Error placing the parse_headerfalse 
+
+INSERT INTO procedure_debug_log (proc_name, line_marker, message) 
+    VALUES ('debug_with_table', 'Line 100', :lv_sql);
+
+    ------------------------------------------------------------
+    -- 6. EXECUTE COPY
+    ------------------------------------------------------------
+
+    EXECUTE IMMEDIATE lv_sql;
+
+
+    ------------------------------------------------------------
+    -- 7. RETURN GENERATED SQL
+    ------------------------------------------------------------
+
+    RETURN
+        'COPY completed successfully. SQL = ' ||
+        lv_sql;
+
+
+EXCEPTION
+
+    WHEN OTHER THEN
+
+        RETURN
+            'An error occurred: ' ||
+            SQLERRM;
+
+END;
+$$;
+
+SHOW FILE FORMATS;
+DESC FILE FORMAT MY_CSV_FORMAT;
+
+
+ALTER SESSION SET LOG_LEVEL = 'DEBUG';
+SELECT 
+    TIMESTAMP, 
+    RECORD['severity_text']::VARCHAR AS severity, 
+    VALUE::VARCHAR AS debug_message
+FROM Dmy_event_table -- Replace with your active event table name
+
+ORDER BY TIMESTAMP ASC;
+
+Select * FROM procedure_debug_log;
+
+COPY INTO EMPLOYEES ("ID", "FIRST_NAME", "LAST_NAME", "PHONE") FROM (SELECT $1, $2, $3, $4 FROM @my_csv_stage/day2_data.csv) FILE_FORMAT = (FORMAT_NAME = 'MY_CSV_FORMAT' PARSE_HEADER = FALSE SKIP_HEADER = 1);
+
+DESC FILE FORMAT MY_CSV_FORMAT;
+Select  * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='EMPLOYEES';    
+
+
+EXECUTE IMMEDIATE $$
+DECLARE
+    v_total       NUMBER DEFAULT 0;
+    lv_column     STRING DEFAULT NULL;
+    lv_column_stg STRING DEFAULT NULL;
+    v_msg         STRING DEFAULT 'Calculation done';
+
+BEGIN
+
+    FOR i IN
+    (
+        WITH METADATASTAGE AS
+        (
+            SELECT
+                COLUMN_NAME,
+                TYPE,
+                NULLABLE
+            FROM TABLE
+            (
+                INFER_SCHEMA
+                (
+                    LOCATION    => '@my_csv_stage/day2_data.csv',
+                    FILE_FORMAT => 'MY_CSV_FORMAT'
+                )
+            )
+        ),
+        TABLECOLS AS
+        (
+            SELECT
+                COLUMN_NAME,
+                DATA_TYPE,
+                IS_NULLABLE
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = 'EMPLOYEES'
+        )
+        SELECT
+            A.COLUMN_NAME,
+            A.TYPE AS STAGE_DATA_TYPE,
+            TA.DATA_TYPE AS TABLE_DATA_TYPE,
+            CASE
+                WHEN TA.COLUMN_NAME IS NULL
+                    THEN 'MISSED COLUMN'
+
+                WHEN UPPER(TA.DATA_TYPE) <> UPPER(A.TYPE)
+                    THEN 'MISMATCH DATATYPE'
+
+                ELSE TA.COLUMN_NAME
+            END AS COLUMN_INFORMATION
+
+        FROM METADATASTAGE A
+
+        LEFT JOIN TABLECOLS TA
+            ON UPPER(TA.COLUMN_NAME) = UPPER(A.COLUMN_NAME)
+    )
+    DO
+
+        IF i.COLUMN_INFORMATION = 'MISSED COLUMN' THEN
+
+            EXECUTE IMMEDIATE
+                'ALTER TABLE EMPLOYEES ADD COLUMN "' ||
+                i.COLUMN_NAME ||
+                '" ' ||
+                i.STAGE_DATA_TYPE;
+
+        ELSE
+
+            lv_column :=
+                COALESCE(lv_column || ', ', '') ||
+                i.COLUMN_NAME;
+
+            lv_column_stg :=
+                COALESCE(lv_column_stg || ', ', '') ||
+                '$' || i.COLUMN_NAME;
+
+        END IF;
+
+    END FOR;
+COPY INTO EMPLOYEES lv_column 
+SELECT lv_column_stg FROM @my_csv_stage/day2_data.csv
+(FILE_FORMAT =>(TYPE=CSV SKIP_HEADER=1 optinally_enclosed_by=',');
+    RETURN 'Calculation done';
+
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN 'An error occurred: ' || SQLERRM;
+
+END;
+$$
+
+
+
+
+
+EXECUTE IMMEDIATE $$
+DECLARE
+    lv_column       STRING DEFAULT NULL;
+    lv_column_stg   STRING DEFAULT NULL;
+    lv_sql          STRING;
+
+BEGIN
+
+    ------------------------------------------------------------
+    -- 1. CHECK SOURCE METADATA
+    ------------------------------------------------------------
+
+    FOR i IN
+    (
+        WITH METADATASTAGE AS
+        (
+            SELECT
+                COLUMN_NAME,
+                TYPE,
+                NULLABLE,
+                ORDER_ID
+            FROM TABLE
+            (
+                INFER_SCHEMA
+                (
+                    LOCATION    => '@my_csv_stage/day2_data.csv',
+                    FILE_FORMAT => 'MY_CSV_FORMAT'
+                )
+            )
+        ),
+        TABLECOLS AS
+        (
+            SELECT
+                COLUMN_NAME,
+                DATA_TYPE,
+                IS_NULLABLE
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = 'EMPLOYEES'
+        )
+        SELECT
+            A.COLUMN_NAME,
+            A.TYPE AS STAGE_DATA_TYPE,
+            A.ORDER_ID,
+            TA.COLUMN_NAME AS TARGET_COLUMN,
+            TA.DATA_TYPE AS TARGET_DATA_TYPE,
+
+            CASE
+                WHEN TA.COLUMN_NAME IS NULL
+                    THEN 'MISSED COLUMN'
+
+                WHEN UPPER(TA.DATA_TYPE) <> UPPER(A.TYPE)
+                    THEN 'MISMATCH DATATYPE'
+
+                ELSE 'MATCHED'
+            END AS COLUMN_INFORMATION
+
+        FROM METADATASTAGE A
+
+        LEFT JOIN TABLECOLS TA
+            ON UPPER(TA.COLUMN_NAME) = UPPER(A.COLUMN_NAME)
+
+        ORDER BY A.ORDER_ID
+    )
+    DO
+
+        --------------------------------------------------------
+        -- 2. ADD MISSING COLUMN
+        --------------------------------------------------------
+
+        IF i.COLUMN_INFORMATION = 'MISSED COLUMN' THEN
+
+            lv_sql :=
+                'ALTER TABLE EMPLOYEES ADD COLUMN "' ||
+                i.COLUMN_NAME ||
+                '" ' ||
+                i.STAGE_DATA_TYPE;
+
+            EXECUTE IMMEDIATE lv_sql;
+
+        END IF;
+
+
+        --------------------------------------------------------
+        -- 3. BUILD TARGET COLUMN LIST
+        --------------------------------------------------------
+
+        lv_column :=
+            COALESCE(lv_column || ', ', '') ||
+            '"' || i.COLUMN_NAME || '"';
+
+
+        --------------------------------------------------------
+        -- 4. BUILD STAGE COLUMN LIST
+        --------------------------------------------------------
+
+        lv_column_stg :=
+            COALESCE(lv_column_stg || ', ', '') ||
+            '$' || i.ORDER_ID;
+
+    END FOR;
+
+
+    ------------------------------------------------------------
+    -- 5. BUILD COPY COMMAND
+    ------------------------------------------------------------
+
+    lv_sql :=
+        'COPY INTO EMPLOYEES (' ||
+        lv_column ||
+        ') ' ||
+
+        'FROM (SELECT ' ||
+        lv_column_stg ||
+        ' FROM @my_csv_stage/day2_data.csv) ' ||
+
+        'FILE_FORMAT = (FORMAT_NAME = ''MY_CSV_FORMAT'')';
+
+
+    ------------------------------------------------------------
+    -- 6. EXECUTE COPY
+    ------------------------------------------------------------
+
+    EXECUTE IMMEDIATE lv_sql;
+
+
+    ------------------------------------------------------------
+    -- 7. RETURN GENERATED SQL
+    ------------------------------------------------------------
+
+    RETURN
+        'COPY completed successfully. SQL = ' ||
+        lv_sql;
+
+
+EXCEPTION
+
+    WHEN OTHER THEN
+
+        RETURN
+            'An error occurred: ' ||
+            SQLERRM;
+
+END;
+$$;
